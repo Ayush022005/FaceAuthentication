@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face Authentication</title>
+</head>
+<body>
+  <h1>Face Authentication with Model Security</h1>
+
+  <!-- Video and Canvas for Face Detection -->
+  <video id="video" autoplay></video>
+  <canvas id="canvas"></canvas>
+
+  <!-- Form to enter name and capture face -->
+  <input type="text" id="personName" placeholder="Enter name">
+  <button id="captureBtn">Capture Face</button>
+  <div id="savedFaces"></div>
+
+  <script>
+    let video = document.getElementById("video");
+    let canvas = document.getElementById("canvas");
+    let ctx = canvas.getContext("2d");
+    let model;
+    let iv; // For decryption
+
+    // Function to cache and retrieve model from localStorage
+    const loadModel = async () => {
+      const cachedModel = localStorage.getItem('encryptedModel');
+      const cachedIV = localStorage.getItem('iv');
+
+      if (cachedModel && cachedIV) {
+        // Use cached model
+        iv = cachedIV;
+        model = await decryptModel(cachedModel, cachedIV);
+      } else {
+        // Fetch encrypted model from backend
+        const response = await fetch("/getModel");
+        const data = await response.json();
+        const encryptedModel = await fetch(data.model).then(res => res.json());
+
+        // Cache model and IV in localStorage
+        localStorage.setItem('encryptedModel', JSON.stringify(encryptedModel));
+        localStorage.setItem('iv', data.iv);
+
+        iv = data.iv;
+        model = await decryptModel(encryptedModel, data.iv);
+      }
+    };
+
+    // Decrypt the model using AES
+    const decryptModel = async (encryptedModel, iv) => {
+      const decryptedData = window.crypto.subtle.decrypt(
+        {
+          name: "AES-CBC",
+          iv: new Uint8Array(iv.match(/.{1,2}/g).map(byte => parseInt(byte, 16)))
+        },
+        await window.crypto.subtle.importKey(
+          "raw",
+          new TextEncoder().encode("mySecretKey123456"), // Same key used in the backend
+          { name: "AES-CBC" },
+          false,
+          ["decrypt"]
+        ),
+        new Uint8Array(Object.values(encryptedModel))
+      );
+      return await blazeface.load(decryptedData); // Load decrypted model in BlazeFace
+    };
+
+    // Access camera
+    const accessCamera = () => {
+      navigator.mediaDevices
+        .getUserMedia({
+          video: { width: 500, height: 400 },
+          audio: false,
+        })
+        .then((stream) => {
+          video.srcObject = stream;
+        });
+    };
+
+    // Detect faces and draw rectangles
+    const detectFaces = async () => {
+      const predictions = await model.estimateFaces(video, false);
+      ctx.drawImage(video, 0, 0, 500, 400);
+      
+      predictions.forEach((prediction) => {
+        // Draw face bounding box
+        ctx.beginPath();
+        ctx.lineWidth = "4";
+        ctx.strokeStyle = "yellow";
+        ctx.rect(
+          prediction.topLeft[0],
+          prediction.topLeft[1],
+          prediction.bottomRight[0] - prediction.topLeft[0],
+          prediction.bottomRight[1] - prediction.topLeft[1]
+        );
+        ctx.stroke();
+      });
+    };
+
+    // Capture face
+    const captureFace = async () => {
+      const name = document.getElementById("personName").value;
+      if (!name) {
+        alert("Please enter a name.");
+        return;
+      }
+
+      const predictions = await model.estimateFaces(video, false);
+
+      if (predictions.length > 0) {
+        const prediction = predictions[0];
+        const [x, y] = prediction.topLeft;
+        const [x2, y2] = prediction.bottomRight;
+        const width = x2 - x;
+        const height = y2 - y;
+
+        const faceCanvas = document.createElement("canvas");
+        faceCanvas.width = width;
+        faceCanvas.height = height;
+        const faceCtx = faceCanvas.getContext("2d");
+
+        faceCtx.drawImage(video, x, y, width, height, 0, 0, width, height);
+
+        const faceImage = faceCanvas.toDataURL("image/png");
+
+        const img = document.createElement("img");
+        img.src = faceImage;
+        img.width = 100;
+
+        const label = document.createElement("p");
+        label.textContent = name;
+
+        const container = document.createElement("div");
+        container.appendChild(img);
+        container.appendChild(label);
+        document.getElementById("savedFaces").appendChild(container);
+
+        document.getElementById("personName").value = '';
+      } else {
+        alert("No face detected!");
+      }
+    };
+
+    // Event listeners
+    document.getElementById("captureBtn").addEventListener("click", captureFace);
+    accessCamera();
+
+    video.addEventListener("loadeddata", async () => {
+      await loadModel();
+      setInterval(detectFaces, 40); // Run face detection every 40ms
+    });
+  </script>
+</body>
+</html>
